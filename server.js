@@ -1,7 +1,7 @@
 // Bridge Twilio <-> OpenAI Realtime (voz em tempo real)
 import express from "express";
 import http from "http";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // defina no Render
@@ -15,19 +15,18 @@ if (!OPENAI_API_KEY) {
 const app = express();
 const server = http.createServer(app);
 
-// Healthcheck simples
+// Healthcheck
 app.get("/", (_req, res) => res.send("OK - Twilio <-> OpenAI Realtime"));
 
-// WebSocket do lado público para a Twilio conectar (Media Streams)
+// WebSocket público para a Twilio (Media Streams)
 const wss = new WebSocketServer({ server, path: "/twilio" });
 
 wss.on("connection", (twilioWs) => {
   console.log("🔌 Twilio stream conectado");
-
   let streamSid = null;
 
   // Conecta no WebSocket Realtime da OpenAI
-  const oaiWs = new (await import("ws")).WebSocket(
+  const oaiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OAI_MODEL)}`,
     {
       headers: {
@@ -37,25 +36,20 @@ wss.on("connection", (twilioWs) => {
     }
   );
 
-  // Quando a sessão abre, configure formatos + persona + VAD
+  // Sessão Realtime: formatos, voz e VAD
   oaiWs.on("open", () => {
     console.log("✅ Conectado ao OpenAI Realtime");
     const sessionUpdate = {
       type: "session.update",
       session: {
-        // turn-taking pelo servidor (VAD)
         turn_detection: { type: "server_vad" },
-
-        // Áudio em μ-law 8k para casar com a Twilio
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-
-        // Voz e instruções
         voice: OAI_VOICE,
         instructions:
           "Fale em português do Brasil como consultora simpática da Joey Suplementos. " +
-          "Converse de forma natural e humana, 1–2 frases por vez; " +
-          "faça pergunta aberta quando fizer sentido. Evite repetir a mesma pergunta.",
+          "Converse de forma natural, 1–2 frases por vez; faça pergunta aberta quando fizer sentido. " +
+          "Evite repetir a mesma pergunta.",
         modalities: ["text", "audio"],
         temperature: 0.6
       }
@@ -63,32 +57,26 @@ wss.on("connection", (twilioWs) => {
     oaiWs.send(JSON.stringify(sessionUpdate));
   });
 
-  // 🔁 Mensagens que vêm da Twilio (start/media/stop)
+  // Mensagens da Twilio (start/media/stop)
   twilioWs.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
 
       if (msg.event === "start") {
         streamSid = msg.start.streamSid;
-        // Nada a enviar ao OAI aqui; só guardamos o streamSid
         return;
       }
 
       if (msg.event === "media") {
-        // Twilio envia payload base64 μ-law 8k SEM header
-        // Enviamos ao Realtime como delta de buffer de entrada
-        oaiWs.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: msg.media.payload // base64 μ-law 8k
-          })
-        );
-        // Com server_vad, não precisamos comitar manualmente a cada pacote
+        // payload base64 μ-law 8k sem header
+        oaiWs.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: msg.media.payload
+        }));
         return;
       }
 
       if (msg.event === "stop") {
-        // encerra tudo
         try { oaiWs.close(); } catch {}
         try { twilioWs.close(); } catch {}
         return;
@@ -98,17 +86,15 @@ wss.on("connection", (twilioWs) => {
     }
   });
 
-  // 🔁 Mensagens do OpenAI (áudio de resposta em deltas)
+  // Mensagens do OpenAI (deltas de áudio de saída)
   oaiWs.on("message", (buf) => {
     try {
       const evt = JSON.parse(buf.toString());
 
-      // Realtime costuma emitir "response.output_audio.delta"
       if (
         (evt.type === "response.output_audio.delta" ||
-          evt.type === "output_audio.delta") &&
-        evt.delta &&
-        streamSid
+         evt.type === "output_audio.delta") &&
+        evt.delta && streamSid
       ) {
         const media = {
           event: "media",
@@ -118,18 +104,14 @@ wss.on("connection", (twilioWs) => {
         twilioWs.send(JSON.stringify(media));
       }
 
-      // Opcional: marcar fim de resposta
       if (evt.type === "response.completed" && streamSid) {
-        twilioWs.send(
-          JSON.stringify({ event: "mark", streamSid, mark: { name: "done" } })
-        );
+        twilioWs.send(JSON.stringify({ event: "mark", streamSid, mark: { name: "done" } }));
       }
     } catch (e) {
       console.error("Erro processando mensagem do OpenAI:", e);
     }
   });
 
-  // Encerramentos
   const closeSafe = () => {
     try { oaiWs.close(); } catch {}
     try { twilioWs.close(); } catch {}
