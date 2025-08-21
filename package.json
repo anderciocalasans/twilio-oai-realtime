@@ -1,15 +1,13 @@
 {
-  "name": "twilio-oai-realtime",
+  "name": "twilio-oai-realtime-bridge",
   "version": "1.0.0",
+  "type": "module",
   "main": "server.js",
-  "license": "MIT",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "twilio": "^4.21.0",
-    "ws": "^8.14.2",
-    "node-fetch": "^3.3.2"
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
   }
 }
