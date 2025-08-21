@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: twilio-oai-realtime
+    runtime: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
