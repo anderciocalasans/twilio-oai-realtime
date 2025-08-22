@@ -46,7 +46,7 @@ wss.on("connection", (twilioWs) => {
     }
   };
 
-  // buffer para mensagens ao Twilio (quase nunca precisa, mas por segurança)
+  // buffer para mensagens ao Twilio
   const toTwilio = (obj) => {
     if (twilioWs.readyState === WebSocket.OPEN) {
       twilioWs.send(JSON.stringify(obj));
@@ -56,7 +56,7 @@ wss.on("connection", (twilioWs) => {
   // Controle de fim de fala (commit + response)
   let inactivityTimer = null;
   let pending = false;
-  const SILENCE_MS = 700; // 0,7s sem áudio => considera fim de fala
+  const SILENCE_MS = 700; // 0,7s sem áudio => fim de fala
 
   const scheduleCommitAndRespond = () => {
     if (inactivityTimer) clearTimeout(inactivityTimer);
@@ -64,9 +64,7 @@ wss.on("connection", (twilioWs) => {
       if (pending) return;
       pending = true;
       try {
-        // 1) fecha o buffer de entrada
         sendToOAI({ type: "input_audio_buffer.commit" });
-        // 2) pede resposta em áudio (streaming)
         sendToOAI({ type: "response.create", response: { modalities: ["audio"] } });
       } catch (e) {
         console.error("Erro ao commit/response:", e);
@@ -76,18 +74,17 @@ wss.on("connection", (twilioWs) => {
     }, SILENCE_MS);
   };
 
-  // Quando o OAI abrir, atualiza sessão e esvazia fila
+  // Quando o OAI abrir, atualiza sessão e já pede 1ª fala
   oaiWs.on("open", () => {
     console.log("✅ Conectado ao OpenAI Realtime");
+
+    // 1) configura sessão
     sendToOAI({
       type: "session.update",
       session: {
-        // turn-taking natural
         turn_detection: { type: "server_vad" },
-        // codec compatível com telefonia Twilio
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        // voz/persona
         voice: OAI_VOICE,
         modalities: ["text", "audio"],
         temperature: 0.55,
@@ -95,12 +92,25 @@ wss.on("connection", (twilioWs) => {
           "Fale em português do Brasil como consultora simpática da Joey Suplementos. " +
           "Converse de forma humana e prática, 1–2 frases por vez; entregue valor antes de perguntar; " +
           "varie o jeito de perguntar e evite repetir a mesma pergunta. " +
-          "Para sono, cite 1–2 opções comuns (magnésio, L‑teanina, melatonina curto prazo) e pergunte " +
+          "Para sono, cite 1–2 opções comuns (magnésio, L-teanina, melatonina curto prazo) e pergunte " +
           "uma coisa específica (adormecer, manter o sono, acordar cedo?). Evite promessas médicas.",
       },
     });
 
-    // esvazia o buffer pendente
+    // 2) força saudação inicial
+    if (GREETING) {
+      sendToOAI({
+        type: "response.create",
+        response: {
+          instructions:
+            "Oi! Aqui é a consultora da Joey Suplementos. Posso te ajudar com sono, energia, foco ou massa. " +
+            "O que você gostaria de melhorar primeiro?",
+          modalities: ["audio"],
+        },
+      });
+    }
+
+    // 3) esvazia buffer pendente
     while (toOAIQueue.length) oaiWs.send(toOAIQueue.shift());
   });
 
@@ -111,29 +121,14 @@ wss.on("connection", (twilioWs) => {
 
       if (msg.event === "start") {
         streamSid = msg.start.streamSid;
-
-        if (GREETING) {
-          // saudação curta (opcional)
-          sendToOAI({
-            type: "response.create",
-            response: {
-              instructions:
-                "Saudação breve e natural. Diga que pode ajudar com sono, energia, foco ou massa, " +
-                "e finalize com uma pergunta aberta sobre o objetivo principal.",
-              modalities: ["audio"],
-            },
-          });
-        }
         return;
       }
 
       if (msg.event === "media") {
-        // anexar áudio μ-law 8k (base64, sem header)
         sendToOAI({
           type: "input_audio_buffer.append",
           audio: msg.media.payload,
         });
-        // programa commit + response se houver silêncio
         scheduleCommitAndRespond();
         return;
       }
@@ -148,17 +143,20 @@ wss.on("connection", (twilioWs) => {
     }
   });
 
-  // OAI -> Twilio
+  // OAI -> Twilio (com logs detalhados)
   oaiWs.on("message", (buf) => {
     try {
       const evt = JSON.parse(buf.toString());
+      if (evt.type?.includes("audio")) {
+        console.log("OAI evt:", evt.type, evt.delta ? "(delta)" : "");
+      } else {
+        console.log("OAI evt:", evt.type);
+      }
 
-      // deltas de áudio prontos para tocar (g711_ulaw 8k base64)
       if (
         (evt.type === "response.output_audio.delta" ||
           evt.type === "output_audio.delta") &&
-        evt.delta &&
-        streamSid
+        evt.delta && streamSid
       ) {
         toTwilio({ event: "media", streamSid, media: { payload: evt.delta } });
       }
