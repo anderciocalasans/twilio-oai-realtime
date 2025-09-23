@@ -1,10 +1,12 @@
 services:
-  - type: web
-    name: twilio-oai-realtime
-    runtime: node
-    plan: free
-    buildCommand: "npm install"
-    startCommand: "npm start"
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
+- type: web
+name: twilio-openai-realtime-poc
+env: node
+plan: free
+autoDeploy: true
+buildCommand: npm ci
+startCommand: node server.js
+healthCheckPath: /healthz
+envVars:
+- key: OPENAI_REALTIME_MODEL
+value: gpt-4o-realtime-preview
