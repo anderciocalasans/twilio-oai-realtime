@@ -176,7 +176,8 @@ Se disser "parar" ou "não quero", encerre educadamente.`
   twilioWS.on('error', (e) => console.error('WS Twilio erro', e));
 });
 
-// IMPORTANTE: ouvir em 0.0.0.0 no Render
-http.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Servidor em http://0.0.0.0:${PORT}`);
+app.get('/healthz', (_, res) => res.status(200).send('ok'));
+
+http.listen(process.env.PORT || 3000, '0.0.0.0', () => {
+  console.log(`🌐 Servidor em http://0.0.0.0:${process.env.PORT || 3000}`);
 });
