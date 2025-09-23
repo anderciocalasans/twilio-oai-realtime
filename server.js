@@ -2,6 +2,7 @@
 import express from "express";
 import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
+import twilio from "twilio"; // 👈 adicionado
 
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -15,7 +16,27 @@ if (!OPENAI_API_KEY) {
 
 const app = express();
 const server = http.createServer(app);
+
+// --- Twilio REST Client para disparar chamadas ---
+const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+
+// Rota básica
 app.get("/", (_req, res) => res.send("OK - Twilio <-> OpenAI Realtime"));
+
+// 🚀 Endpoint para iniciar ligação
+app.get("/start-call", async (req, res) => {
+  try {
+    const call = await client.calls.create({
+      to: process.env.TARGET_PHONE,          // número que vai receber a call
+      from: process.env.TWILIO_PHONE,        // número comprado na Twilio
+      url: "https://SEU_SUBDOMAIN_TWILIO/voice", // Twilio Function que devolve o <Connect><Stream>
+    });
+    res.json({ ok: true, sid: call.sid });
+  } catch (err) {
+    console.error("Erro ao iniciar ligação:", err);
+    res.status(500).send("Erro ao iniciar ligação");
+  }
+});
 
 // WS público para Twilio Media Streams
 const wss = new WebSocketServer({ server, path: "/twilio" });
