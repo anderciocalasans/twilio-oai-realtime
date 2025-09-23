@@ -194,4 +194,3 @@ Se disser "parar" ou "não quero", encerre educadamente.`
 http.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log(`🌐 Servidor em http://0.0.0.0:${process.env.PORT || 3000}`);
 });
-});
