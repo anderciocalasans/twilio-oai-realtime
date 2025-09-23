@@ -101,14 +101,13 @@ wss.on('connection', async (twilioWS) => {
       console.log('🟢 session.created');
       oaWS.send(JSON.stringify({
         type: 'session.update',
-        session: {
-          input_audio_format:  { type: 'pcm16', sample_rate: 8000 },
-          output_audio_format: { type: 'pcm16', sample_rate: 8000 },
-          instructions:
-`Você é o assistente virtual da Joie Suplementos. Fale em pt-BR, tom cordial e objetivo.
+session: {
+  input_audio_format:  "pcm16",
+  output_audio_format: "pcm16",
+  instructions: `Você é o assistente virtual da Joie Suplementos. Fale em pt-BR, tom cordial e objetivo.
 Oferta breve; se houver interesse, ofereça enviar link oficial por WhatsApp/SMS.
 Se disser "parar" ou "não quero", encerre educadamente.`
-        }
+}
       }));
       oaWS.send(JSON.stringify({
         type: 'response.create',
