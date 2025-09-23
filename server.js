@@ -73,4 +73,6 @@ twilioWS.on('error', (e) => console.error('WS Twilio erro', e));
 
 app.get('/healthz', (_, res) => res.status(200).send('ok'));
 
-http.listen(PORT, () => console.log(`🌐 Servidor em http://localhost:${PORT}`));
+http.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Servidor em http://0.0.0.0:${PORT}`);
+});
