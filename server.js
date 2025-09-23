@@ -121,7 +121,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
         pendingPCM = [];
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-        oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio'] } }));
+        oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
       }, 400);
     }
 
@@ -166,7 +166,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
         pendingPCM = [];
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-        oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio'] } }));
+        oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
       }
       cleanup('twilio stop');
     }
