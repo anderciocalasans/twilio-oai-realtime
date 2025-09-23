@@ -22,7 +22,7 @@ const http = createServer(app);
 app.get('/healthz', (_, res) => res.status(200).send('ok'));
 app.get('/health',  (_, res) => res.status(200).send('ok'));
 
-// TwiML opcional
+// TwiML opcional (para usar como Url da call, se quiser)
 app.get('/twiml', (req, res) => {
   res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -72,6 +72,9 @@ function pcm16ToMulaw(int16) {
 // ---------- WebSocket Twilio ----------
 const wss = new WebSocketServer({ server: http, path: '/voice-stream' });
 
+// OpenAI exige ao menos ~100ms de áudio por commit. Em PCM16 8kHz = 1600 bytes.
+const MIN_PCM_BYTES = 1600;
+
 wss.on('connection', async (twilioWS) => {
   console.log('⚡ Twilio conectado ao /voice-stream');
 
@@ -99,25 +102,33 @@ wss.on('connection', async (twilioWS) => {
 
     if (data.type === 'session.created') {
       console.log('🟢 session.created');
+      // Formatos de áudio como string + instruções
       oaWS.send(JSON.stringify({
         type: 'session.update',
-session: {
-  input_audio_format:  "pcm16",
-  output_audio_format: "pcm16",
-  instructions: `Você é o assistente virtual da Joie Suplementos. Fale em pt-BR, tom cordial e objetivo.
+        session: {
+          input_audio_format:  "pcm16",
+          output_audio_format: "pcm16",
+          instructions: `Você é o assistente virtual da Joie Suplementos. Fale em pt-BR, tom cordial e objetivo.
 Oferta breve; se houver interesse, ofereça enviar link oficial por WhatsApp/SMS.
 Se disser "parar" ou "não quero", encerre educadamente.`
-}
+        }
       }));
+      // Saudação inicial
       oaWS.send(JSON.stringify({
         type: 'response.create',
         response: { modalities: ['audio','text'], instructions: 'Oi! Eu sou o assistente virtual da Joie Suplementos. Posso falar um minuto?' }
       }));
+
       openaiReady = true;
 
+      // Commit periódico: só envia se houver >= 100ms de áudio acumulado
       commitTimer = setInterval(() => {
         if (!openaiReady || pendingPCM.length === 0) return;
         const chunk = Buffer.concat(pendingPCM);
+        if (chunk.length < MIN_PCM_BYTES) {
+          // ainda não bateu 100ms — aguarda o próximo tick
+          return;
+        }
         pendingPCM = [];
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
@@ -125,6 +136,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       }, 400);
     }
 
+    // Áudio de saída da OpenAI
     if (data.type === 'response.output_audio.delta' && data.delta) {
       const pcm = Buffer.from(data.delta, 'base64'); // 8k
       const ulaw = pcm16ToMulaw(new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength/2));
@@ -161,12 +173,15 @@ Se disser "parar" ou "não quero", encerre educadamente.`
     }
     if (msg.event === 'stop') {
       console.log('🛰️  Twilio stream STOP');
+      // Flush final — também com checagem de 100ms
       if (pendingPCM.length) {
         const chunk = Buffer.concat(pendingPCM);
+        if (chunk.length >= MIN_PCM_BYTES) {
+          oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
+          oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+          oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
+        }
         pendingPCM = [];
-        oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
-        oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-        oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
       }
       cleanup('twilio stop');
     }
@@ -176,8 +191,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
   twilioWS.on('error', (e) => console.error('WS Twilio erro', e));
 });
 
-app.get('/healthz', (_, res) => res.status(200).send('ok'));
-
 http.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log(`🌐 Servidor em http://0.0.0.0:${process.env.PORT || 3000}`);
+});
 });
