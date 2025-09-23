@@ -1,5 +1,5 @@
 {
-  "name": "twilio-oai-realtime-bridge",
+  "name": "twilio-openai-realtime-poc",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -7,6 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "ws": "^8.18.0"
   }
