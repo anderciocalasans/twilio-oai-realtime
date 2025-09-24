@@ -1,4 +1,4 @@
-// server.js — ponte Twilio Media Streams ↔ OpenAI Realtime
+// server.js — ponte Twilio Media Streams ↔ OpenAI Realtime (G.711 μ-law ponta a ponta)
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
@@ -18,12 +18,11 @@ if (!OPENAI_API_KEY) {
 const app = express();
 const http = createServer(app);
 
-// ---------------- Health ----------------
+// ---- Health
 app.get('/healthz', (_, res) => res.status(200).send('ok'));
 app.get('/health',  (_, res) => res.status(200).send('ok'));
 
-// ---------------- TwiML opcional ----------------
-// (Se quiser usar este endpoint como Url da call)
+// ---- TwiML opcional (se quiser usar como Url da call)
 app.get('/twiml', (req, res) => {
   res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -33,62 +32,26 @@ app.get('/twiml', (req, res) => {
 </Response>`);
 });
 
-// ---------------- utils μ-law ↔ PCM16 (8 kHz) ----------------
-const SIGN_BIT = 0x80;
-const QUANT_MASK = 0x0f;
-const SEG_SHIFT = 4;
-const SEG_MASK = 0x70;
-function ulawDecode(uVal) {
-  uVal = ~uVal & 0xff;
-  let t = ((uVal & QUANT_MASK) << 3) + 0x84;
-  t <<= ((uVal & SEG_MASK) >>> SEG_SHIFT);
-  return ((uVal & SIGN_BIT) ? (0x84 - t) : (t - 0x84));
-}
-function mulawToPcm16(bufUlaw) {
-  const out = new Int16Array(bufUlaw.length);
-  for (let i = 0; i < bufUlaw.length; i++) out[i] = ulawDecode(bufUlaw[i]);
-  return Buffer.from(out.buffer);
-}
-function linear2ulaw(sample) {
-  let sign = (sample >> 8) & 0x80;
-  if (sign !== 0) sample = -sample;
-  if (sample > 32635) sample = 32635;
-  sample += 132;
-  let exponent = 7;
-  for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent--;
-  let mantissa = (sample >> ((exponent === 0) ? 4 : (exponent + 3))) & 0x0f;
-  let ulawbyte = ~(sign | (exponent << 4) | mantissa);
-  return ulawbyte & 0xff;
-}
-function pcm16ToMulaw(int16) {
-  const view = new DataView(int16.buffer, int16.byteOffset, int16.byteLength);
-  const out = Buffer.alloc(int16.byteLength / 2);
-  for (let i = 0, j = 0; i < int16.byteLength; i += 2, j++) {
-    const s = view.getInt16(i, true);
-    out[j] = linear2ulaw(s);
-  }
-  return out;
-}
-
-// ---------------- WebSocket Twilio ----------------
+// ---- WebSocket do Twilio
 const wss = new WebSocketServer({ server: http, path: '/voice-stream' });
 
-// 100ms em PCM16 8kHz ≈ 1600 bytes. Vamos usar 200ms (3200) p/ garantir.
-const MIN_PCM_BYTES = 3200;
+// μ-law 8 kHz: 1 byte por amostra ⇒ 100 ms ≈ 800 bytes. Vamos usar 200 ms (1600).
+const MIN_ULAW_BYTES = 1600;
 
 wss.on('connection', async (twilioWS) => {
   console.log('⚡ Twilio conectado ao /voice-stream');
 
-  // Conexão com a OpenAI Realtime
+  // Conecta na OpenAI Realtime
   const oaWS = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`,
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
   );
 
-  // estado
   let openaiReady = false;
-  let pendingPCM = [];
-  let pendingBytes = 0;
+
+  // buffers/controle (μ-law)
+  let pendingULaw = [];
+  let pendingBytes = 0;   // bytes μ-law acumulados
   let hasAudio = false;
   let commitTimer = null;
 
@@ -96,31 +59,34 @@ wss.on('connection', async (twilioWS) => {
     try { if (commitTimer) { clearInterval(commitTimer); commitTimer = null; } } catch {}
     try { twilioWS.close(); } catch {}
     try { oaWS.close(); } catch {}
-    pendingPCM = [];
+    pendingULaw = [];
     pendingBytes = 0;
     hasAudio = false;
     console.log('🧹 Encerrando sessão:', why);
   };
 
-  // loop de commit: só inicia após chegar áudio
   const startCommitLoop = () => {
-    if (commitTimer) return; // evita duplicidade
+    if (commitTimer) return;
     commitTimer = setInterval(() => {
       if (!openaiReady || !hasAudio) return;
-      if (pendingBytes < MIN_PCM_BYTES) return;
+      if (pendingBytes < MIN_ULAW_BYTES) return;
 
-      const chunk = Buffer.concat(pendingPCM);
-      pendingPCM = [];
+      const chunk = Buffer.concat(pendingULaw);
+      pendingULaw = [];
       pendingBytes = 0;
 
-      console.log('📤 commit bytes:', chunk.length);
+      console.log('📤 commit bytes (μ-law):', chunk.length);
+      // envia μ-law direto
       oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
       oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-      oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
-    }, 350); // 300–400ms é um bom intervalo
+      oaWS.send(JSON.stringify({
+        type: 'response.create',
+        response: { modalities: ['audio','text'] }
+      }));
+    }, 300);
   };
 
-  // ------- Handlers OpenAI -------
+  // ---- OpenAI handlers
   oaWS.on('open', () => console.log('✅ OpenAI Realtime aberto'));
 
   oaWS.on('message', (raw) => {
@@ -129,19 +95,19 @@ wss.on('connection', async (twilioWS) => {
     if (data.type === 'session.created') {
       console.log('🟢 session.created');
 
-      // Formatos como string + instruções
+      // IMPORTANTÍSSIMO: μ-law 8 kHz como entrada e saída
       oaWS.send(JSON.stringify({
         type: 'session.update',
         session: {
-          input_audio_format:  'pcm16',
-          output_audio_format: 'pcm16',
+          input_audio_format:  'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
           instructions: `Você é o assistente virtual da Joie Suplementos. Fale em pt-BR, tom cordial e objetivo.
 Oferta breve; se houver interesse, ofereça enviar link oficial por WhatsApp/SMS.
 Se disser "parar" ou "não quero", encerre educadamente.`
         }
       }));
 
-      // Saudação inicial (já fala algo imediatamente)
+      // Saudação inicial (a IA já fala algo)
       oaWS.send(JSON.stringify({
         type: 'response.create',
         response: {
@@ -153,11 +119,10 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       openaiReady = true;
     }
 
-    // Áudio de saída (IA -> Twilio)
+    // Áudio de saída da IA (já em μ-law por causa do output_audio_format)
     if (data.type === 'response.output_audio.delta' && data.delta) {
-      const pcm = Buffer.from(data.delta, 'base64'); // PCM16 8k
-      const ulaw = pcm16ToMulaw(new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength/2));
-      twilioWS.send(JSON.stringify({ event: 'media', media: { payload: ulaw.toString('base64') } }));
+      // delta já está em g711_ulaw (base64)
+      twilioWS.send(JSON.stringify({ event: 'media', media: { payload: data.delta } }));
     }
 
     if (data.type === 'response.completed') {
@@ -172,7 +137,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
   oaWS.on('close', () => console.log('🔻 OpenAI WS fechado'));
   oaWS.on('error', (e) => console.error('WS OpenAI erro', e));
 
-  // ------- Twilio -> (áudio) -> OpenAI -------
+  // ---- Twilio → μ-law → OpenAI
   twilioWS.on('message', (raw) => {
     let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
 
@@ -187,15 +152,12 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       if (!ulawB64) return;
 
       const ulawBuf = Buffer.from(ulawB64, 'base64');
-      console.log('🎙️  media bytes:', ulawBuf.length); // <-- log por pacote
-
-      const pcm16 = mulawToPcm16(ulawBuf);
+      console.log('🎙️  media bytes (μ-law):', ulawBuf.length);
 
       hasAudio = true;
-      pendingPCM.push(pcm16);
-      pendingBytes += pcm16.length;
+      pendingULaw.push(ulawBuf);
+      pendingBytes += ulawBuf.length;
 
-      // inicia commit loop na 1ª chegada de áudio
       startCommitLoop();
       return;
     }
@@ -203,20 +165,15 @@ Se disser "parar" ou "não quero", encerre educadamente.`
     if (msg.event === 'stop') {
       console.log('🛰️  Twilio stream STOP');
 
-      // Flush final apenas se >=200ms acumulados
-      if (pendingBytes >= MIN_PCM_BYTES) {
-        const chunk = Buffer.concat(pendingPCM);
-        console.log('📤 commit final bytes:', chunk.length);
+      // flush final se tiver ≥ 200 ms acumulados
+      if (pendingBytes >= MIN_ULAW_BYTES) {
+        const chunk = Buffer.concat(pendingULaw);
+        console.log('📤 commit final bytes (μ-law):', chunk.length);
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
         oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
       }
 
-      pendingPCM = [];
-      pendingBytes = 0;
-      hasAudio = false;
-
-      try { if (commitTimer) { clearInterval(commitTimer); commitTimer = null; } } catch {}
       cleanup('twilio stop');
     }
   });
