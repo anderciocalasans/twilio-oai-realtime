@@ -85,9 +85,8 @@ wss.on('connection', async (twilioWS) => {
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
   );
 
+  // estado
   let openaiReady = false;
-
-  // buffers e controle do áudio de entrada (Twilio -> OpenAI)
   let pendingPCM = [];
   let pendingBytes = 0;
   let hasAudio = false;
@@ -108,16 +107,17 @@ wss.on('connection', async (twilioWS) => {
     if (commitTimer) return; // evita duplicidade
     commitTimer = setInterval(() => {
       if (!openaiReady || !hasAudio) return;
-      if (pendingBytes < MIN_PCM_BYTES) return; // ainda não temos >=200ms
+      if (pendingBytes < MIN_PCM_BYTES) return;
 
       const chunk = Buffer.concat(pendingPCM);
       pendingPCM = [];
       pendingBytes = 0;
 
+      console.log('📤 commit bytes:', chunk.length);
       oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
       oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
-    }, 300); // 300–400ms é um bom intervalo
+    }, 350); // 300–400ms é um bom intervalo
   };
 
   // ------- Handlers OpenAI -------
@@ -141,7 +141,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
         }
       }));
 
-      // Saudação inicial
+      // Saudação inicial (já fala algo imediatamente)
       oaWS.send(JSON.stringify({
         type: 'response.create',
         response: {
@@ -187,6 +187,8 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       if (!ulawB64) return;
 
       const ulawBuf = Buffer.from(ulawB64, 'base64');
+      console.log('🎙️  media bytes:', ulawBuf.length); // <-- log por pacote
+
       const pcm16 = mulawToPcm16(ulawBuf);
 
       hasAudio = true;
@@ -204,6 +206,7 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       // Flush final apenas se >=200ms acumulados
       if (pendingBytes >= MIN_PCM_BYTES) {
         const chunk = Buffer.concat(pendingPCM);
+        console.log('📤 commit final bytes:', chunk.length);
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
         oaWS.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
         oaWS.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }));
@@ -212,8 +215,8 @@ Se disser "parar" ou "não quero", encerre educadamente.`
       pendingPCM = [];
       pendingBytes = 0;
       hasAudio = false;
-      try { if (commitTimer) { clearInterval(commitTimer); commitTimer = null; } } catch {}
 
+      try { if (commitTimer) { clearInterval(commitTimer); commitTimer = null; } } catch {}
       cleanup('twilio stop');
     }
   });
